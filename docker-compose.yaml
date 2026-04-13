@@ -1,0 +1,25 @@
+services:
+  notebook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: forklift-notebook
+    working_dir: /workspace
+    ports:
+      - "8888:8888"
+    volumes:
+      - .:/workspace
+    environment:
+      JUPYTER_TOKEN: forklift
+      PYTHONUNBUFFERED: "1"
+    command:
+      - jupyter
+      - lab
+      - --ip=0.0.0.0
+      - --port=8888
+      - --no-browser
+      - --allow-root
+      - --IdentityProvider.token=${JUPYTER_TOKEN:-forklift}
+      - --PasswordIdentityProvider.hashed_password=
+    stdin_open: true
+    tty: true
