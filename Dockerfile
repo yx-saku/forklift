@@ -11,6 +11,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
         libgomp1 \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
