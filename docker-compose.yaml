@@ -3,7 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        USER_NAME: ${HOST_USER:-${USER:-appuser}}
+        USER_UID: ${HOST_UID:-${UID:-1000}}
+        USER_GID: ${HOST_GID:-${GID:-1000}}
     container_name: forklift-notebook
+    user: "${HOST_UID:-${UID:-1000}}:${HOST_GID:-${GID:-1000}}"
     working_dir: /workspace
     ports:
       - "8888:8888"
@@ -18,7 +23,6 @@ services:
       - --ip=0.0.0.0
       - --port=8888
       - --no-browser
-      - --allow-root
       - --IdentityProvider.token=${JUPYTER_TOKEN:-forklift}
       - --PasswordIdentityProvider.hashed_password=
     stdin_open: true
