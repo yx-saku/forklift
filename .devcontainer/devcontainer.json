@@ -41,7 +41,8 @@
 			"extensions": [
 				"ms-python.python",
 				"ms-toolsai.jupyter",
-				"openai.chatgpt"
+				"openai.chatgpt",
+				"kilocode.kilo-code"
 			]
 		}
 	}
@@ -50,9 +51,14 @@
 	// "remoteUser": "devcontainer"
 	,
   	"mounts": [
-    	"source=${localEnv:HOME}/.codex,target=/vscode/.codex,type=bind,consistency=cached"
+		"source=codex-home-${devcontainerId},target=/home/${localEnv:USER}/.codex,type=volume",
+		"source=${localEnv:HOME}/.config/kilo,target=${localEnv:HOME}/.config/kilo,type=bind",
+		"source=${localEnv:HOME}/.local/state/kilo,target=${localEnv:HOME}/.local/state/kilo,type=bind",
+		"source=${localWorkspaceFolder}/.devcontainer/.local/share/kilo,target=${localEnv:HOME}/.local/share/kilo,type=bind"
   	],
-  	"remoteEnv": {
-    	"CODEX_HOME": "/vscode/.codex"
-  	}
+	"initializeCommand": "mkdir -p ${localEnv:HOME}/.config/kilo ${localEnv:HOME}/.local/state/kilo ${localWorkspaceFolder}/.local/share/kilo",
+	"onCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} ${localEnv:HOME}/.config ${localEnv:HOME}/.local",
+	
+	"postCreateCommand": "sudo mkdir -p /home/${localEnv:USER}/.codex && sudo chown -R ${localEnv:USER}:${localEnv:USER} /home/${localEnv:USER}/.codex && chmod 700 /home/${localEnv:USER}/.codex",
+	"postStartCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} /home/${localEnv:USER}/.codex && chmod 700 /home/${localEnv:USER}/.codex"
 }

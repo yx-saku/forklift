@@ -2,3 +2,8 @@
 .dockerignore
 data
 outputs
+.codex
+.local
+cache
+_bk*
+指示

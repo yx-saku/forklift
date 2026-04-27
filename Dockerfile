@@ -16,9 +16,12 @@ WORKDIR /workspace
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
+        fonts-noto-cjk \
         libgomp1 \
         git \
         sudo \
+        bubblewrap \
+        npm \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
@@ -33,23 +36,18 @@ RUN pip install --upgrade pip \
         scipy==1.15.2 \
         soundfile==0.13.1
 
-RUN set -eux; \
-    if ! getent group "${USER_GID}" >/dev/null; then \
-        groupadd --gid "${USER_GID}" "${USER_NAME}"; \
-    fi; \
-    if ! id --user "${USER_UID}" >/dev/null 2>&1; then \
-        useradd \
-            --uid "${USER_UID}" \
-            --gid "${USER_GID}" \
-            --create-home \
-            --shell /bin/sh \
-            "${USER_NAME}"; \
-    fi; \
-    mkdir -p /workspace "${HOME}"; \
-    chown -R "${USER_UID}:${USER_GID}" /workspace "${HOME}"
+RUN groupadd -g $USER_GID $USER_NAME && \
+    useradd --create-home --home-dir /home/$USER_NAME --shell /bin/bash -u $USER_UID -g $USER_GID --groups adm,sudo $USER_NAME && \
+    echo $USER_NAME:$USER_NAME | chpasswd && \
+    echo "$USER_NAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+RUN npm i -g @openai/codex@latest
 
 EXPOSE 8888
 
 USER ${USER_NAME}:${USER_NAME}
+
+COPY entrypoint.sh /entrypoint.sh
+ENTRYPOINT [ "/entrypoint.sh" ]
 
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--IdentityProvider.token=forklift", "--PasswordIdentityProvider.hashed_password="]
