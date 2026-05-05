@@ -7,3 +7,5 @@ outputs
 cache
 _bk*
 指示
+.kilo
+__pycache__

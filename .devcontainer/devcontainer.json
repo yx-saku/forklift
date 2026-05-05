@@ -51,14 +51,15 @@
 	// "remoteUser": "devcontainer"
 	,
   	"mounts": [
-		"source=codex-home-${devcontainerId},target=/home/${localEnv:USER}/.codex,type=volume",
+		// "source=codex-home-${devcontainerId},target==${localEnv:HOME}/.codex,type=volume",
 		"source=${localEnv:HOME}/.config/kilo,target=${localEnv:HOME}/.config/kilo,type=bind",
 		"source=${localEnv:HOME}/.local/state/kilo,target=${localEnv:HOME}/.local/state/kilo,type=bind",
 		"source=${localWorkspaceFolder}/.devcontainer/.local/share/kilo,target=${localEnv:HOME}/.local/share/kilo,type=bind"
   	],
-	"initializeCommand": "mkdir -p ${localEnv:HOME}/.config/kilo ${localEnv:HOME}/.local/state/kilo ${localWorkspaceFolder}/.local/share/kilo",
-	"onCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} ${localEnv:HOME}/.config ${localEnv:HOME}/.local",
+	"initializeCommand": "mkdir -p ${localEnv:HOME}/.config/kilo ${localEnv:HOME}/.local/state/kilo ${localWorkspaceFolder}/.devcontainer/.local/share/kilo",
+	// "onCreateCommand": "mkdir -p ${localEnv:HOME}/.config/kilo ${localEnv:HOME}/.local/state/kilo ${localEnv:HOME}/.local/share/kilo"
+	// "onCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} ${localEnv:HOME}/.config ${localEnv:HOME}/.local"
 	
-	"postCreateCommand": "sudo mkdir -p /home/${localEnv:USER}/.codex && sudo chown -R ${localEnv:USER}:${localEnv:USER} /home/${localEnv:USER}/.codex && chmod 700 /home/${localEnv:USER}/.codex",
-	"postStartCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} /home/${localEnv:USER}/.codex && chmod 700 /home/${localEnv:USER}/.codex"
+	// "postCreateCommand": "sudo mkdir -p =${localEnv:HOME}/.codex && sudo chown -R ${localEnv:USER}:${localEnv:USER} =${localEnv:HOME}/.codex && chmod 700 =${localEnv:HOME}/.codex",
+	// "postStartCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} =${localEnv:HOME}/.codex && chmod 700 =${localEnv:HOME}/.codex"
 }

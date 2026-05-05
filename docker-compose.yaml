@@ -14,7 +14,7 @@ services:
       - "8888:8888"
     volumes:
       - .:/workspace
-      - ./cache:/home/${USER}/cache
+      - ./cache:/home/${HOST_USER:-${USER:-appuser}}/cache
     environment:
       JUPYTER_TOKEN: forklift
       PYTHONUNBUFFERED: "1"
