@@ -41,7 +41,7 @@
 			"extensions": [
 				"ms-python.python",
 				"ms-toolsai.jupyter",
-				"openai.chatgpt",
+				// "openai.chatgpt",
 				"kilocode.kilo-code"
 			]
 		}
@@ -52,11 +52,11 @@
 	,
   	"mounts": [
 		// "source=codex-home-${devcontainerId},target==${localEnv:HOME}/.codex,type=volume",
-		"source=${localEnv:HOME}/.config/kilo,target=${localEnv:HOME}/.config/kilo,type=bind",
-		"source=${localEnv:HOME}/.local/state/kilo,target=${localEnv:HOME}/.local/state/kilo,type=bind",
+		"source=${localWorkspaceFolder}/.config/kilo,target=${localEnv:HOME}/.config/kilo,type=bind",
+		"source=${localWorkspaceFolder}/.local/state/kilo,target=${localEnv:HOME}/.local/state/kilo,type=bind",
 		"source=${localWorkspaceFolder}/.devcontainer/.local/share/kilo,target=${localEnv:HOME}/.local/share/kilo,type=bind"
   	],
-	"initializeCommand": "mkdir -p ${localEnv:HOME}/.config/kilo ${localEnv:HOME}/.local/state/kilo ${localWorkspaceFolder}/.devcontainer/.local/share/kilo",
+	"initializeCommand": "mkdir -p ${localWorkspaceFolder}/.config/kilo ${localWorkspaceFolder}/.local/state/kilo ${localWorkspaceFolder}/.devcontainer/.local/share/kilo",
 	// "onCreateCommand": "mkdir -p ${localEnv:HOME}/.config/kilo ${localEnv:HOME}/.local/state/kilo ${localEnv:HOME}/.local/share/kilo"
 	// "onCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} ${localEnv:HOME}/.config ${localEnv:HOME}/.local"
 	
