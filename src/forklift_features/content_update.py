@@ -10,6 +10,12 @@ import numpy as np
 DEFAULT_CONTENT_UPDATE_DIFF_THRESHOLD = 1.0
 DEFAULT_CONTENT_UPDATE_RESIZE_WIDTH = 480
 DEFAULT_CONTENT_UPDATE_GAUSSIAN_BLUR_KERNEL: int | None = None
+DEFAULT_CONTENT_UPDATE_TILE_GRID_ROWS = 8
+DEFAULT_CONTENT_UPDATE_TILE_GRID_COLS = 12
+DEFAULT_CONTENT_UPDATE_TILE_TOP_FRACTION = 0.10
+DEFAULT_CONTENT_UPDATE_TILE_ACTIVE_THRESHOLD_RATIO = 0.50
+DEFAULT_CONTENT_UPDATE_TILE_MIN_ACTIVE_TILES = 1
+DEFAULT_CONTENT_UPDATE_TILE_MIN_ACTIVE_RATIO = 0.01
 DEFAULT_STATIC_SCENE_MIN_SEC = 0.5
 DEFAULT_FLOW_TARGET_DT = 0.1
 DEFAULT_FLOW_NORMALIZE_BY_DT = True
@@ -54,6 +60,87 @@ def frame_mean_abs_diff(current_gray: np.ndarray, previous_gray: np.ndarray) -> 
         )
     diff = current_gray.astype(np.float32) - previous_gray.astype(np.float32)
     return float(np.mean(np.abs(diff))) if diff.size else float("inf")
+
+
+def frame_tile_abs_diff_stats(
+    current_gray: np.ndarray,
+    previous_gray: np.ndarray,
+    *,
+    diff_threshold: float = DEFAULT_CONTENT_UPDATE_DIFF_THRESHOLD,
+    grid_rows: int = DEFAULT_CONTENT_UPDATE_TILE_GRID_ROWS,
+    grid_cols: int = DEFAULT_CONTENT_UPDATE_TILE_GRID_COLS,
+    top_fraction: float = DEFAULT_CONTENT_UPDATE_TILE_TOP_FRACTION,
+    active_threshold_ratio: float = DEFAULT_CONTENT_UPDATE_TILE_ACTIVE_THRESHOLD_RATIO,
+    min_active_tiles: int = DEFAULT_CONTENT_UPDATE_TILE_MIN_ACTIVE_TILES,
+    min_active_ratio: float = DEFAULT_CONTENT_UPDATE_TILE_MIN_ACTIVE_RATIO,
+) -> dict[str, float]:
+    """Return tile-based frame difference stats for local content-update detection."""
+    if current_gray.shape != previous_gray.shape:
+        current_gray = cv2.resize(
+            current_gray,
+            (previous_gray.shape[1], previous_gray.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+    diff = np.abs(current_gray.astype(np.float32) - previous_gray.astype(np.float32))
+    if diff.size == 0:
+        return {
+            "score": float("inf"),
+            "tile_top_mean": float("inf"),
+            "tile_p95": float("inf"),
+            "tile_max": float("inf"),
+            "tile_active_count": 0.0,
+            "tile_active_ratio": 0.0,
+        }
+
+    rows = max(1, int(grid_rows))
+    cols = max(1, int(grid_cols))
+    row_edges = np.linspace(0, diff.shape[0], rows + 1, dtype=int)
+    col_edges = np.linspace(0, diff.shape[1], cols + 1, dtype=int)
+    tile_scores: list[float] = []
+    for row_index in range(rows):
+        row_start = int(row_edges[row_index])
+        row_end = int(row_edges[row_index + 1])
+        if row_end <= row_start:
+            continue
+        for col_index in range(cols):
+            col_start = int(col_edges[col_index])
+            col_end = int(col_edges[col_index + 1])
+            if col_end <= col_start:
+                continue
+            tile = diff[row_start:row_end, col_start:col_end]
+            if tile.size:
+                tile_scores.append(float(np.mean(tile)))
+
+    scores = np.asarray(tile_scores, dtype=float)
+    finite_scores = scores[np.isfinite(scores)]
+    if finite_scores.size == 0:
+        return {
+            "score": np.nan,
+            "tile_top_mean": np.nan,
+            "tile_p95": np.nan,
+            "tile_max": np.nan,
+            "tile_active_count": 0.0,
+            "tile_active_ratio": 0.0,
+        }
+
+    top_count = max(1, int(np.ceil(finite_scores.size * float(np.clip(top_fraction, 0.0, 1.0)))))
+    sorted_scores = np.sort(finite_scores)
+    tile_top_mean = float(np.mean(sorted_scores[-top_count:]))
+    tile_p95 = float(np.percentile(finite_scores, 95))
+    tile_max = float(np.max(finite_scores))
+    active_threshold = max(float(diff_threshold) * max(float(active_threshold_ratio), 0.0), 1e-9)
+    active_count = int(np.count_nonzero(finite_scores >= active_threshold))
+    active_ratio = float(active_count / finite_scores.size) if finite_scores.size else 0.0
+    active_enough = active_count >= max(1, int(min_active_tiles)) and active_ratio >= max(0.0, float(min_active_ratio))
+    score = max(tile_top_mean, tile_p95, tile_max) if active_enough else 0.0
+    return {
+        "score": float(score),
+        "tile_top_mean": tile_top_mean,
+        "tile_p95": tile_p95,
+        "tile_max": tile_max,
+        "tile_active_count": float(active_count),
+        "tile_active_ratio": active_ratio,
+    }
 
 
 def is_content_update(diff_score: float, *, diff_threshold: float = DEFAULT_CONTENT_UPDATE_DIFF_THRESHOLD) -> bool:
