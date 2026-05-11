@@ -4,6 +4,7 @@ data
 outputs
 .codex
 .local
+.config
 cache
 _bk*
 指示

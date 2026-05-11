@@ -37,6 +37,7 @@ DEFAULT_BROAD_VIBRATION_SCORE_CONFIG = {
     "min_visible": 1e-6,
     "broad_vib_score_weights": {"A": 0.25, "B": 0.75, "C": 0.0},
     "broad_vib_low_intensity_percentile": 20.0,
+    "broad_vib_spread_power": 1.0,
 }
 
 
@@ -208,6 +209,7 @@ def _build_broad_vibration_lookup(
     weight_b = float(weights.get("B", weights.get("b", 0.75)))
     weight_c = float(weights.get("C", weights.get("c", 0.0)))
     low_intensity_percentile = float(np.clip(cfg.get("broad_vib_low_intensity_percentile", 20.0), 0.0, 100.0))
+    spread_power = max(float(cfg.get("broad_vib_spread_power", 1.0)), 0.0)
     lookup: dict[tuple[str, int], float] = {}
     for feature_name in requested:
         base_feature = BROAD_VIBRATION_FEATURE_TO_BASE[feature_name]
@@ -242,8 +244,9 @@ def _build_broad_vibration_lookup(
             effective_cells = (value_sum * value_sum / value_square_sum) if value_square_sum > 1e-12 else 0.0
             grid_count = int(len(group))
             spread_score = float(np.clip(effective_cells / grid_count, 0.0, 1.0)) if grid_count else 0.0
+            spread_score_weighted = float(np.power(spread_score, spread_power))
             lookup[(feature_name, int(start))] = float(
-                weight_a * mean_intensity * spread_score
+                weight_a * mean_intensity * spread_score_weighted
                 + weight_b * low_intensity
                 + weight_c * max_intensity
             )
@@ -533,6 +536,9 @@ def aggregate_camera_scores(
         row = dict(zip(available_group_cols, keys))
         row[score_col] = float(getattr(group[score_col], agg_func)()) if score_col in group.columns else 0.0
         row[raw_score_col] = float(getattr(group[raw_score_col], agg_func)()) if raw_score_col in group.columns else 0.0
+        for event_col in ["motion_event_score", "motion_event_score_raw"]:
+            if event_col in group.columns:
+                row[event_col] = float(getattr(group[event_col], agg_func)())
         row["camera_count"] = int(group["camera"].nunique()) if "camera" in group.columns else int(len(group))
         if score_col in group.columns and len(group):
             best_row = group.loc[group[score_col].astype(float).idxmax()]

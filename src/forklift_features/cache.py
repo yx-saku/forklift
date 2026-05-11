@@ -12,8 +12,8 @@ import pandas as pd
 
 
 DEFAULT_FEATURE_CACHE_VERSION = "sample_feature_cache_v7"
-DEFAULT_FLOW_CACHE_VERSION = "sample_flow_cache_v5"
-DEFAULT_FLOW_CACHE_METHOD = "farneback_grid_frame_bin_apportioned_0p1s"
+DEFAULT_FLOW_CACHE_VERSION = "sample_flow_cache_v13"
+DEFAULT_FLOW_CACHE_METHOD = "farneback_event_update_interval_apportioned_0p1s"
 
 
 def normalize_cache_value(value: Any) -> Any:
@@ -73,6 +73,7 @@ def build_feature_cache_settings(
     vibration_score_upper_percentile: float,
     broad_vibration_feature_names: list[str],
     broad_vibration_top_k: int | None = None,
+    broad_vibration_spread_power: float = 1.0,
     flow_method: str = DEFAULT_FLOW_CACHE_METHOD,
 ) -> dict[str, Any]:
     return normalize_cache_value({
@@ -95,6 +96,7 @@ def build_feature_cache_settings(
         "vibration_score_lower_percentile": vibration_score_lower_percentile,
         "vibration_score_upper_percentile": vibration_score_upper_percentile,
         "broad_vibration_top_k": broad_vibration_top_k,
+        "broad_vibration_spread_power": broad_vibration_spread_power,
         "broad_vibration_feature_names": list(broad_vibration_feature_names),
     })
 
@@ -138,6 +140,8 @@ def build_sample_feature_cache_metadata(sample: pd.Series | dict[str, Any], sett
             "audio": file_cache_fingerprint(getter("audio_path")),
             "front": file_cache_fingerprint(getter("front_path")),
             "rear": file_cache_fingerprint(getter("rear_path")),
+            "front_frame_map": file_cache_fingerprint(getter("front_frame_map_path")),
+            "rear_frame_map": file_cache_fingerprint(getter("rear_frame_map_path")),
         },
         "settings": normalize_cache_value(settings),
     }
@@ -150,6 +154,8 @@ def build_sample_flow_cache_metadata(sample: pd.Series | dict[str, Any], setting
         "files": {
             "front": file_cache_fingerprint(getter("front_path")),
             "rear": file_cache_fingerprint(getter("rear_path")),
+            "front_frame_map": file_cache_fingerprint(getter("front_frame_map_path")),
+            "rear_frame_map": file_cache_fingerprint(getter("rear_frame_map_path")),
         },
         "settings": normalize_cache_value(settings),
     }
@@ -424,6 +430,13 @@ def _numeric_series(df: pd.DataFrame, column: str, default: float = 0.0) -> pd.S
     return pd.to_numeric(df[column], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(default).astype(float)
 
 
+def _first_value(df: pd.DataFrame, column: str, default: Any = np.nan) -> Any:
+    if column not in df.columns or df.empty:
+        return default
+    values = df[column].dropna()
+    return values.iat[0] if len(values) else default
+
+
 def visualization_grid_to_raw_flow(
     grid_df: pd.DataFrame,
     *,
@@ -453,6 +466,15 @@ def visualization_grid_to_raw_flow(
         work["flow_mag"] = np.hypot(work["flow_x"], work["flow_y"])
     work["valid_ratio"] = _numeric_series(work, "valid_ratio", 1.0).clip(0.0, 1.0)
     work["flow_reliable_ratio"] = _numeric_series(work, "flow_reliable_ratio", 0.0).clip(0.0, 1.0)
+    if "flow_backward_consistency" in work.columns:
+        work["flow_backward_consistency"] = _numeric_series(work, "flow_backward_consistency", 0.0).clip(0.0, 1.0)
+    else:
+        work["flow_backward_consistency"] = work["flow_reliable_ratio"]
+    work["flow_edge_strength"] = _numeric_series(work, "flow_edge_strength", 0.0).clip(lower=0.0)
+    work["flow_edge_density"] = _numeric_series(work, "flow_edge_density", 0.0).clip(0.0, 1.0)
+    work["flow_edge_confidence"] = _numeric_series(work, "flow_edge_confidence", 0.0).clip(0.0, 1.0)
+    work["flow_coherence_confidence"] = _numeric_series(work, "flow_coherence_confidence", 1.0).clip(0.0, 1.0)
+    work["flow_measurement_confidence"] = _numeric_series(work, "flow_measurement_confidence", 0.0).clip(0.0, 1.0)
     work["flow_failed"] = 0.0
 
     width = max(float(flow_sample_sec), 1e-6)
@@ -478,6 +500,26 @@ def visualization_grid_to_raw_flow(
         row[f"{prefix}_flow_y_std"] = float(np.std(y_values)) if y_values.size else 0.0
         row[f"{prefix}_flow_failed"] = 0.0
         row[f"{prefix}_flow_reliable_ratio"] = float(part["flow_reliable_ratio"].mean()) if len(part) else 0.0
+        row[f"{prefix}_flow_backward_consistency"] = float(part["flow_backward_consistency"].mean()) if len(part) else 0.0
+        row[f"{prefix}_flow_edge_confidence"] = float(part["flow_edge_confidence"].mean()) if len(part) else 0.0
+        row[f"{prefix}_flow_coherence_confidence"] = float(part["flow_coherence_confidence"].mean()) if len(part) else 1.0
+        row[f"{prefix}_flow_measurement_confidence"] = float(part["flow_measurement_confidence"].mean()) if len(part) else 0.0
+        if "flow_mode" in part.columns:
+            row[f"{prefix}_flow_mode"] = str(_first_value(part, "flow_mode", "observed_update"))
+        for source_col, target_suffix in [
+            ("flow_confidence", "flow_confidence"),
+            ("flow_observed_dt_sec", "flow_observed_dt_sec"),
+            ("flow_source_start_sec", "flow_source_start_sec"),
+            ("flow_source_end_sec", "flow_source_end_sec"),
+            ("flow_gap_capture_frames", "flow_gap_capture_frames"),
+            ("flow_interpolated", "flow_interpolated"),
+            ("flow_hold", "flow_hold"),
+            ("flow_update_frame_index", "flow_update_frame_index"),
+            ("flow_edge_strength", "flow_edge_strength"),
+            ("flow_edge_density", "flow_edge_density"),
+        ]:
+            if source_col in part.columns:
+                row[f"{prefix}_{target_suffix}"] = float(_numeric_series(part, source_col, np.nan).mean()) if len(part) else np.nan
         if "source_dt" in part.columns:
             row[f"{prefix}_flow_source_dt"] = float(_numeric_series(part, "source_dt", 0.0).mean()) if len(part) else 0.0
         if "flow_window_frame_count" in part.columns:
@@ -490,6 +532,12 @@ def visualization_grid_to_raw_flow(
             row[f"{prefix}_flow_cell_{gy}_{gx}_y_mean"] = float(cell.flow_y)
             row[f"{prefix}_flow_cell_{gy}_{gx}_valid_ratio"] = float(cell.valid_ratio)
             row[f"{prefix}_flow_cell_{gy}_{gx}_flow_reliable_ratio"] = float(cell.flow_reliable_ratio)
+            row[f"{prefix}_flow_cell_{gy}_{gx}_flow_backward_consistency"] = float(cell.flow_backward_consistency)
+            row[f"{prefix}_flow_cell_{gy}_{gx}_flow_edge_strength"] = float(cell.flow_edge_strength)
+            row[f"{prefix}_flow_cell_{gy}_{gx}_flow_edge_density"] = float(cell.flow_edge_density)
+            row[f"{prefix}_flow_cell_{gy}_{gx}_flow_edge_confidence"] = float(cell.flow_edge_confidence)
+            row[f"{prefix}_flow_cell_{gy}_{gx}_flow_coherence_confidence"] = float(cell.flow_coherence_confidence)
+            row[f"{prefix}_flow_cell_{gy}_{gx}_flow_measurement_confidence"] = float(cell.flow_measurement_confidence)
             row[f"{prefix}_flow_cell_{gy}_{gx}_source_dt"] = float(getattr(cell, "source_dt", np.nan))
             row[f"{prefix}_flow_cell_{gy}_{gx}_flow_window_frame_count"] = float(getattr(cell, "flow_window_frame_count", np.nan))
             row[f"{prefix}_flow_cell_{gy}_{gx}_forward_backward_error_mean"] = float(getattr(cell, "flow_forward_backward_error_mean", np.nan))
@@ -559,6 +607,12 @@ def raw_flow_to_visualization_grid(raw_flow_df: pd.DataFrame, *, sample_id: str,
             mag_col = f"{prefix}_flow_cell_{gy}_{gx}_mag_mean"
             valid_col = f"{prefix}_flow_cell_{gy}_{gx}_valid_ratio"
             reliable_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_reliable_ratio"
+            consistency_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_backward_consistency"
+            edge_strength_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_edge_strength"
+            edge_density_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_edge_density"
+            edge_confidence_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_edge_confidence"
+            coherence_confidence_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_coherence_confidence"
+            measurement_confidence_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_measurement_confidence"
             source_dt_col = f"{prefix}_flow_cell_{gy}_{gx}_source_dt"
             frame_count_col = f"{prefix}_flow_cell_{gy}_{gx}_flow_window_frame_count"
             error_col = f"{prefix}_flow_cell_{gy}_{gx}_forward_backward_error_mean"
@@ -569,9 +623,16 @@ def raw_flow_to_visualization_grid(raw_flow_df: pd.DataFrame, *, sample_id: str,
                 magnitude = float(np.hypot(x, y))
             valid_ratio = to_float(row.get(valid_col, 1.0), default=1.0)
             reliable_ratio = to_float(row.get(reliable_col, np.nan), default=np.nan)
+            consistency = to_float(row.get(consistency_col, row.get(f"{prefix}_flow_backward_consistency", reliable_ratio)), default=0.0)
+            edge_strength = to_float(row.get(edge_strength_col, row.get(f"{prefix}_flow_edge_strength", 0.0)), default=0.0)
+            edge_density = to_float(row.get(edge_density_col, row.get(f"{prefix}_flow_edge_density", 0.0)), default=0.0)
+            edge_confidence = to_float(row.get(edge_confidence_col, row.get(f"{prefix}_flow_edge_confidence", 0.0)), default=0.0)
+            coherence_confidence = to_float(row.get(coherence_confidence_col, row.get(f"{prefix}_flow_coherence_confidence", 1.0)), default=1.0)
+            measurement_confidence = to_float(row.get(measurement_confidence_col, row.get(f"{prefix}_flow_measurement_confidence", 0.0)), default=0.0)
             source_dt = to_float(row.get(source_dt_col, row.get(f"{prefix}_flow_source_dt", np.nan)), default=np.nan)
             frame_count = to_float(row.get(frame_count_col, row.get(f"{prefix}_flow_window_frame_count", np.nan)), default=np.nan)
             fb_error = to_float(row.get(error_col, np.nan), default=np.nan)
+            flow_mode = row.get(f"{prefix}_flow_mode", np.nan)
             rows.append({
                 "sample_id": str(sample_id),
                 "view": prefix,
@@ -585,8 +646,23 @@ def raw_flow_to_visualization_grid(raw_flow_df: pd.DataFrame, *, sample_id: str,
                 "flow_magnitude_mean": magnitude,
                 "valid_ratio": valid_ratio,
                 "flow_reliable_ratio": reliable_ratio,
+                "flow_backward_consistency": consistency,
+                "flow_edge_strength": edge_strength,
+                "flow_edge_density": edge_density,
+                "flow_edge_confidence": edge_confidence,
+                "flow_coherence_confidence": coherence_confidence,
+                "flow_measurement_confidence": measurement_confidence,
                 "source_dt": source_dt,
                 "flow_window_frame_count": frame_count,
                 "flow_forward_backward_error_mean": fb_error,
+                "flow_mode": str(flow_mode) if pd.notna(flow_mode) else "observed_update",
+                "flow_confidence": to_float(row.get(f"{prefix}_flow_confidence", np.nan), default=np.nan),
+                "flow_observed_dt_sec": to_float(row.get(f"{prefix}_flow_observed_dt_sec", np.nan), default=np.nan),
+                "flow_source_start_sec": to_float(row.get(f"{prefix}_flow_source_start_sec", np.nan), default=np.nan),
+                "flow_source_end_sec": to_float(row.get(f"{prefix}_flow_source_end_sec", np.nan), default=np.nan),
+                "flow_gap_capture_frames": to_float(row.get(f"{prefix}_flow_gap_capture_frames", np.nan), default=np.nan),
+                "flow_interpolated": to_float(row.get(f"{prefix}_flow_interpolated", np.nan), default=np.nan),
+                "flow_hold": to_float(row.get(f"{prefix}_flow_hold", np.nan), default=np.nan),
+                "flow_update_frame_index": to_float(row.get(f"{prefix}_flow_update_frame_index", np.nan), default=np.nan),
             })
     return pd.DataFrame(rows)
