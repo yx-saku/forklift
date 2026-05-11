@@ -687,7 +687,12 @@ def aggregate_camera_scores(
         row = dict(zip(available_group_cols, keys))
         row[score_col] = float(getattr(group[score_col], agg_func)()) if score_col in group.columns else 0.0
         row[raw_score_col] = float(getattr(group[raw_score_col], agg_func)()) if raw_score_col in group.columns else 0.0
-        for event_col in ["motion_event_score", "motion_event_score_raw"]:
+        for event_col in [
+            "motion_event_score",
+            "motion_event_score_raw",
+            "motion_event_abs_score",
+            "motion_event_relative_score",
+        ]:
             if event_col in group.columns:
                 row[event_col] = float(getattr(group[event_col], agg_func)())
         row["camera_count"] = int(group["camera"].nunique()) if "camera" in group.columns else int(len(group))

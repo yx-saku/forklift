@@ -29,6 +29,13 @@ MOTION_EVENT_FEATURE_CANDIDATES = (
     "t_accel_impact_x_score",
     "t_accel_impact_y_score",
 )
+DEFAULT_MOTION_EVENT_RELATIVE_SCORE_CONFIG = {
+    "enabled": True,
+    "group_columns": ("video_id", "camera"),
+    "lower_quantile": 0.50,
+    "upper_quantile": 0.95,
+    "min_range": 1e-6,
+}
 
 
 def fit_score_calibration(scores: np.ndarray | pd.Series, quantiles: tuple[float, float] = (0.5, 0.995)) -> dict[str, float]:
@@ -219,6 +226,111 @@ def fit_event_score_calibration(
     quantiles: tuple[float, float] = (0.50, 0.95),
 ) -> dict[str, float]:
     return fit_score_calibration(values, quantiles)
+
+
+def _motion_event_relative_score_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    merged = dict(DEFAULT_MOTION_EVENT_RELATIVE_SCORE_CONFIG)
+    if config:
+        merged.update(dict(config))
+    group_columns = merged.get(
+        "group_columns",
+        DEFAULT_MOTION_EVENT_RELATIVE_SCORE_CONFIG["group_columns"],
+    )
+    if group_columns is None:
+        group_columns = []
+    elif isinstance(group_columns, str):
+        group_columns = [group_columns]
+    merged["group_columns"] = [str(column) for column in group_columns if str(column).strip()]
+    lower_q, upper_q = sorted([
+        float(merged.get(
+            "lower_quantile",
+            DEFAULT_MOTION_EVENT_RELATIVE_SCORE_CONFIG["lower_quantile"],
+        )),
+        float(merged.get(
+            "upper_quantile",
+            DEFAULT_MOTION_EVENT_RELATIVE_SCORE_CONFIG["upper_quantile"],
+        )),
+    ])
+    merged["lower_quantile"] = float(np.clip(lower_q, 0.0, 1.0))
+    merged["upper_quantile"] = float(np.clip(upper_q, 0.0, 1.0))
+    merged["min_range"] = max(
+        float(merged.get("min_range", DEFAULT_MOTION_EVENT_RELATIVE_SCORE_CONFIG["min_range"])),
+        1e-12,
+    )
+    merged["enabled"] = bool(merged.get("enabled", True))
+    return merged
+
+
+def _motion_event_relative_scores(
+    motion_df: pd.DataFrame,
+    raw_scores: np.ndarray,
+    *,
+    config: dict[str, Any] | None = None,
+) -> np.ndarray:
+    cfg = _motion_event_relative_score_config(config)
+    if motion_df.empty or raw_scores.size == 0 or not cfg["enabled"]:
+        return np.zeros(len(motion_df), dtype=float)
+
+    raw_series = pd.Series(
+        np.nan_to_num(np.asarray(raw_scores, dtype=float), nan=0.0, posinf=0.0, neginf=0.0),
+        index=motion_df.index,
+    )
+    relative = pd.Series(0.0, index=motion_df.index, dtype=float)
+    group_cols = [column for column in cfg["group_columns"] if column in motion_df.columns]
+    if not group_cols:
+        group_iter = [(None, motion_df)]
+    elif len(group_cols) == 1:
+        group_iter = motion_df.groupby(group_cols[0], sort=False)
+    else:
+        group_iter = motion_df.groupby(group_cols, sort=False)
+
+    for _, group in group_iter:
+        values = raw_series.loc[group.index].to_numpy(dtype=float)
+        finite = values[np.isfinite(values)]
+        if finite.size < 2:
+            continue
+        lower = float(np.quantile(finite, cfg["lower_quantile"]))
+        upper = float(np.quantile(finite, cfg["upper_quantile"]))
+        if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower + cfg["min_range"]:
+            continue
+        relative.loc[group.index] = np.clip(
+            (values - lower) / max(upper - lower, cfg["min_range"]),
+            0.0,
+            1.0,
+        )
+    return relative.reindex(motion_df.index).fillna(0.0).to_numpy(dtype=float)
+
+
+def add_motion_event_scores(
+    motion_df: pd.DataFrame,
+    *,
+    raw_scores: np.ndarray | pd.Series | None = None,
+    calibration: dict[str, float] | None = None,
+    relative_config: dict[str, Any] | None = None,
+    raw_score_col: str = "motion_event_score_raw",
+    abs_score_col: str = "motion_event_abs_score",
+    relative_score_col: str = "motion_event_relative_score",
+    score_col: str = "motion_event_score",
+) -> pd.DataFrame:
+    """Add motion event scores using global calibration plus video-relative prominence."""
+    out = motion_df.copy()
+    if raw_scores is not None:
+        raw_values = np.asarray(raw_scores, dtype=float)
+        if len(raw_values) != len(out):
+            raise ValueError(
+                f"raw_scores length must match motion_df: {len(raw_values)} != {len(out)}"
+            )
+        out[raw_score_col] = raw_values
+    raw_values = _numeric_series(out, raw_score_col).to_numpy(dtype=float)
+    abs_scores = _clip01(apply_score_calibration(raw_values, calibration))
+    relative_scores = _clip01(
+        _motion_event_relative_scores(out, raw_values, config=relative_config)
+    )
+    boosted_scores = np.sqrt(np.clip(abs_scores * relative_scores, 0.0, 1.0))
+    out[abs_score_col] = abs_scores
+    out[relative_score_col] = relative_scores
+    out[score_col] = _clip01(np.maximum(abs_scores, boosted_scores))
+    return out
 
 
 def compute_cross_modal_support_score(
