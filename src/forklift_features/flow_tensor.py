@@ -17,6 +17,10 @@ SUPPORTED_MOTION_FEATURE_NAMES = (
     "flow_y_broad_vib_score",
     "t_flow_x_broad_vib_score",
     "t_flow_y_broad_vib_score",
+    "accel_impact_x_score",
+    "accel_impact_y_score",
+    "t_accel_impact_x_score",
+    "t_accel_impact_y_score",
 )
 BROAD_VIBRATION_FEATURE_TO_BASE = {
     "flow_x_broad_vib_score": "flow_x",
@@ -39,12 +43,69 @@ DEFAULT_BROAD_VIBRATION_SCORE_CONFIG = {
     "broad_vib_low_intensity_percentile": 20.0,
     "broad_vib_spread_power": 1.0,
 }
+DEFAULT_RELIABLE_SOFT_GATE_CONFIG = {
+    "low": 0.35,
+    "high": 0.85,
+    "gamma": 2.0,
+}
+DEFAULT_ACCEL_IMPACT_SCORE_CONFIG = {
+    "x_clip_abs": 1.0,
+    "y_clip_abs": 1.0,
+    "t_x_clip_abs": 1.0,
+    "t_y_clip_abs": 1.0,
+    "eps": 1e-6,
+}
+ACCEL_IMPACT_FEATURE_NAMES = (
+    "accel_impact_x_score",
+    "accel_impact_y_score",
+    "t_accel_impact_x_score",
+    "t_accel_impact_y_score",
+)
 
 
 def _numeric_column(df: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:
     if column not in df.columns:
         return pd.Series(default, index=df.index, dtype=float)
     return pd.to_numeric(df[column], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(default).astype(float)
+
+
+def reliable_soft_gate_config(config: Mapping[str, Any] | None = None) -> dict[str, float]:
+    merged = dict(DEFAULT_RELIABLE_SOFT_GATE_CONFIG)
+    if config:
+        merged.update(dict(config))
+    low = float(merged.get("low", DEFAULT_RELIABLE_SOFT_GATE_CONFIG["low"]))
+    high = float(merged.get("high", DEFAULT_RELIABLE_SOFT_GATE_CONFIG["high"]))
+    gamma = max(float(merged.get("gamma", DEFAULT_RELIABLE_SOFT_GATE_CONFIG["gamma"])), 1e-6)
+    if not np.isfinite(low):
+        low = float(DEFAULT_RELIABLE_SOFT_GATE_CONFIG["low"])
+    if not np.isfinite(high):
+        high = float(DEFAULT_RELIABLE_SOFT_GATE_CONFIG["high"])
+    if high <= low:
+        high = low + 1e-6
+    return {"low": low, "high": high, "gamma": gamma}
+
+
+def reliable_ratio_soft_gate(
+    reliable_ratio: np.ndarray | pd.Series | list[float],
+    config: Mapping[str, Any] | None = None,
+    *,
+    low: float | None = None,
+    high: float | None = None,
+    gamma: float | None = None,
+) -> np.ndarray:
+    """Convert flow_reliable_ratio to a stronger soft-gated confidence weight."""
+    cfg = reliable_soft_gate_config(config)
+    if low is not None:
+        cfg["low"] = float(low)
+    if high is not None:
+        cfg["high"] = float(high)
+    if gamma is not None:
+        cfg["gamma"] = max(float(gamma), 1e-6)
+    if cfg["high"] <= cfg["low"]:
+        cfg["high"] = cfg["low"] + 1e-6
+    reliable = np.nan_to_num(np.asarray(reliable_ratio, dtype=float), nan=0.0, posinf=1.0, neginf=0.0)
+    reliable = np.clip(reliable, 0.0, 1.0)
+    return (np.clip((reliable - cfg["low"]) / max(cfg["high"] - cfg["low"], 1e-6), 0.0, 1.0) ** cfg["gamma"]).astype(float)
 
 
 def normalize_motion_feature_names(feature_names: Iterable[str] | None = None) -> list[str]:
@@ -71,6 +132,19 @@ def _broad_vibration_score_config(config: Mapping[str, Any] | None = None) -> di
     weights.update(dict(merged.get("broad_vib_score_weights", {}) or {}))
     merged["broad_vib_score_weights"] = weights
     return merged
+
+
+def _accel_impact_score_config(config: Mapping[str, Any] | None = None) -> dict[str, float]:
+    merged = dict(DEFAULT_ACCEL_IMPACT_SCORE_CONFIG)
+    if config:
+        merged.update(dict(config))
+    return {
+        "x_clip_abs": max(float(merged.get("x_clip_abs", 1.0)), 1e-6),
+        "y_clip_abs": max(float(merged.get("y_clip_abs", 1.0)), 1e-6),
+        "t_x_clip_abs": max(float(merged.get("t_x_clip_abs", 1.0)), 1e-6),
+        "t_y_clip_abs": max(float(merged.get("t_y_clip_abs", 1.0)), 1e-6),
+        "eps": max(float(merged.get("eps", 1e-6)), 1e-12),
+    }
 
 
 def _robust_positive_zscore(values: np.ndarray | pd.Series) -> np.ndarray:
@@ -253,12 +327,67 @@ def _build_broad_vibration_lookup(
     return lookup
 
 
+def _signed_accel_impact_score(values: np.ndarray, grid_count: int, eps: float) -> float:
+    normalized = np.nan_to_num(np.asarray(values, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    normalized = np.clip(normalized, -1.0, 1.0)
+    pos_sum = float(np.sum(np.clip(normalized, 0.0, None)))
+    neg_sum = float(np.sum(np.clip(-normalized, 0.0, None)))
+    major = max(pos_sum, neg_sum)
+    minor = min(pos_sum, neg_sum)
+    mass = float(np.clip(major / max(1, int(grid_count)), 0.0, 1.0))
+    dominance = float((major - minor) / max(major + minor + float(eps), float(eps)))
+    return float(np.clip(mass * dominance, 0.0, 1.0))
+
+
+def _build_accel_impact_lookup(
+    sequence: np.ndarray,
+    times: np.ndarray,
+    starts: list[int],
+    time_steps: int,
+    flow_sample_sec: float,
+    feature_names: list[str],
+    config: Mapping[str, Any] | None,
+) -> dict[tuple[str, int], float]:
+    requested = [name for name in feature_names if name in ACCEL_IMPACT_FEATURE_NAMES]
+    if not requested or sequence.shape[0] == 0:
+        return {}
+    cfg = _accel_impact_score_config(config)
+    prev = np.concatenate([sequence[:1], sequence[:-1]], axis=0)
+    time_values = np.asarray(times, dtype=float)
+    prev_times = np.r_[time_values[:1], time_values[:-1]] if time_values.size else time_values
+    dt = time_values - prev_times
+    dt = np.where(dt > 1e-9, dt, max(float(flow_sample_sec), 1e-6)).reshape((-1, 1, 1))
+    dt_scale = max(float(flow_sample_sec), 1e-6) / dt
+    accel_by_feature = {
+        "accel_impact_x_score": ((sequence[..., 0] - prev[..., 0]) * dt_scale) / cfg["x_clip_abs"],
+        "accel_impact_y_score": ((sequence[..., 1] - prev[..., 1]) * dt_scale) / cfg["y_clip_abs"],
+        "t_accel_impact_x_score": ((sequence[..., 2] - prev[..., 2]) * dt_scale) / cfg["t_x_clip_abs"],
+        "t_accel_impact_y_score": ((sequence[..., 3] - prev[..., 3]) * dt_scale) / cfg["t_y_clip_abs"],
+    }
+    grid_count = max(1, int(sequence.shape[1]) * int(sequence.shape[2]))
+    lookup: dict[tuple[str, int], float] = {}
+    for feature_name in requested:
+        accel = accel_by_feature[feature_name]
+        for start in starts:
+            end = min(int(start) + int(time_steps), int(accel.shape[0]))
+            if end <= int(start):
+                lookup[(feature_name, int(start))] = 0.0
+                continue
+            frame_scores = [
+                _signed_accel_impact_score(accel[index].reshape(-1), grid_count, cfg["eps"])
+                for index in range(int(start), int(end))
+            ]
+            lookup[(feature_name, int(start))] = float(np.mean(frame_scores)) if frame_scores else 0.0
+    return lookup
+
+
 def _assemble_motion_feature_window(
     raw_window: np.ndarray,
     *,
     start: int,
     feature_names: list[str],
     broad_vibration_lookup: Mapping[tuple[str, int], float],
+    accel_impact_lookup: Mapping[tuple[str, int], float],
 ) -> np.ndarray:
     parts = []
     for feature_name in feature_names:
@@ -273,6 +402,9 @@ def _assemble_motion_feature_window(
         elif feature_name in BROAD_VIBRATION_FEATURE_TO_BASE:
             value = float(broad_vibration_lookup.get((feature_name, int(start)), 0.0))
             parts.append(np.full((*raw_window.shape[:-1], 1), value, dtype=np.float32))
+        elif feature_name in ACCEL_IMPACT_FEATURE_NAMES:
+            value = float(accel_impact_lookup.get((feature_name, int(start)), 0.0))
+            parts.append(np.full((*raw_window.shape[:-1], 1), value, dtype=np.float32))
         else:
             raise ValueError(f"Unsupported motion feature: {feature_name}")
     return np.concatenate(parts, axis=-1).astype(np.float32, copy=False)
@@ -283,6 +415,7 @@ def raw_flow_to_camera_grid_sequence(
     camera: str,
     *,
     grid: tuple[int, int] = (3, 3),
+    reliable_soft_gate: Mapping[str, Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert wide raw-flow rows into base ``flow_x/flow_y/t_flow_x/t_flow_y`` sequence."""
     if raw_flow_df is None or raw_flow_df.empty or "time" not in raw_flow_df.columns:
@@ -312,10 +445,11 @@ def raw_flow_to_camera_grid_sequence(
                 reliable = _numeric_column(work, valid_col, 0.0).clip(0.0, 1.0).to_numpy(dtype=np.float32)
             else:
                 reliable = np.ones(len(work), dtype=np.float32)
+            reliable_weight = reliable_ratio_soft_gate(reliable, reliable_soft_gate).astype(np.float32, copy=False)
             sequence[:, gy, gx, 0] = x
             sequence[:, gy, gx, 1] = y
-            sequence[:, gy, gx, 2] = x * reliable
-            sequence[:, gy, gx, 3] = y * reliable
+            sequence[:, gy, gx, 2] = x * reliable_weight
+            sequence[:, gy, gx, 3] = y * reliable_weight
     return times, sequence
 
 
@@ -341,6 +475,8 @@ def build_flow_tensor_windows(
     grid: tuple[int, int] = (3, 3),
     feature_names: Iterable[str] | None = None,
     broad_vib_score_config: Mapping[str, Any] | None = None,
+    reliable_soft_gate_config: Mapping[str, Any] | None = None,
+    accel_impact_score_config: Mapping[str, Any] | None = None,
 ) -> tuple[np.ndarray, pd.DataFrame]:
     """Build camera-wise flow tensors with shape ``(N, T, 3, 3, C)``."""
     motion_feature_names = normalize_motion_feature_names(feature_names)
@@ -354,7 +490,12 @@ def build_flow_tensor_windows(
     tensors: list[np.ndarray] = []
     rows: list[dict[str, Any]] = []
     for camera in cameras:
-        times, sequence = raw_flow_to_camera_grid_sequence(raw_flow_df, str(camera), grid=grid)
+        times, sequence = raw_flow_to_camera_grid_sequence(
+            raw_flow_df,
+            str(camera),
+            grid=grid,
+            reliable_soft_gate=reliable_soft_gate_config,
+        )
         if sequence.shape[0] == 0:
             continue
         starts = _window_starts(sequence.shape[0], time_steps, hop_steps)
@@ -364,6 +505,15 @@ def build_flow_tensor_windows(
             time_steps,
             motion_feature_names,
             broad_vib_score_config,
+        )
+        accel_impact_lookup = _build_accel_impact_lookup(
+            sequence,
+            times,
+            starts,
+            time_steps,
+            flow_sample_sec,
+            motion_feature_names,
+            accel_impact_score_config,
         )
         for start in starts:
             end = min(start + time_steps, sequence.shape[0])
@@ -376,6 +526,7 @@ def build_flow_tensor_windows(
                 start=start,
                 feature_names=motion_feature_names,
                 broad_vibration_lookup=broad_vibration_lookup,
+                accel_impact_lookup=accel_impact_lookup,
             )
             start_sec = float(times[start]) if times.size else 0.0
             last_time = float(times[min(end - 1, len(times) - 1)]) if times.size else start_sec

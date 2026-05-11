@@ -23,6 +23,12 @@ AUDIO_EVENT_RAW_COLUMNS = (
     "audio_centroid",
     "audio_bandwidth",
 )
+MOTION_EVENT_FEATURE_CANDIDATES = (
+    "t_flow_x_broad_vib_score",
+    "t_flow_y_broad_vib_score",
+    "t_accel_impact_x_score",
+    "t_accel_impact_y_score",
+)
 
 
 def fit_score_calibration(scores: np.ndarray | pd.Series, quantiles: tuple[float, float] = (0.5, 0.995)) -> dict[str, float]:
@@ -182,21 +188,29 @@ def motion_event_raw_scores_from_tensor(
     *,
     x_feature: str = "t_flow_x_broad_vib_score",
     y_feature: str = "t_flow_y_broad_vib_score",
+    event_features: list[str] | tuple[str, ...] | None = None,
 ) -> np.ndarray:
-    """Return max(t_flow_x_broad_vib_score, t_flow_y_broad_vib_score) per motion window."""
+    """Return max event-like motion feature value per motion window."""
     values = np.asarray(X, dtype=float)
     if values.size == 0:
         return np.zeros((0,), dtype=float)
     names = list(feature_names)
     raw_parts = []
     reduce_axes = tuple(range(1, values.ndim - 1))
-    for feature in (x_feature, y_feature):
+    if event_features is None:
+        event_features = tuple(dict.fromkeys((x_feature, y_feature, *MOTION_EVENT_FEATURE_CANDIDATES)))
+    for feature in event_features:
         if feature in names:
             channel = values[..., names.index(feature)]
             raw_parts.append(np.nanmax(channel, axis=reduce_axes) if reduce_axes else channel)
     if not raw_parts:
         return np.zeros((values.shape[0],), dtype=float)
     return np.maximum.reduce([np.nan_to_num(part, nan=0.0, posinf=0.0, neginf=0.0) for part in raw_parts]).astype(float)
+
+
+def selected_motion_event_features(feature_names: list[str] | tuple[str, ...]) -> list[str]:
+    names = list(feature_names)
+    return [feature for feature in MOTION_EVENT_FEATURE_CANDIDATES if feature in names]
 
 
 def fit_event_score_calibration(

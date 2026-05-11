@@ -119,6 +119,8 @@ def build_motion_windows(
     tensor_hop_sec: float,
     motion_feature_names: Iterable[str],
     broad_vib_score_config: dict[str, Any] | None,
+    reliable_soft_gate_config: dict[str, Any] | None = None,
+    accel_impact_score_config: dict[str, Any] | None = None,
     label_default: str | None = None,
     enable_cache: bool = True,
 ) -> tuple[np.ndarray, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
@@ -146,6 +148,8 @@ def build_motion_windows(
         grid=flow_grid,
         feature_names=motion_feature_names,
         broad_vib_score_config=broad_vib_score_config,
+        reliable_soft_gate_config=reliable_soft_gate_config,
+        accel_impact_score_config=accel_impact_score_config,
     )
     if len(meta):
         category = sample_series.get("category", label_default or "unknown")
